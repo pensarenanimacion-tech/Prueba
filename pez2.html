@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Derecha - Peces</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { margin: 0; background: #042f2e; color: #f0fdfa; font-family: sans-serif; overflow: hidden; touch-action: none; }
+    .hud { position: fixed; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; pointer-events: none; z-index: 10; }
+    .pill { background: rgba(15, 23, 42, 0.8); padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(94, 234, 212, 0.2); }
+    button { pointer-events: auto; background: #0d9488; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="pill"><span id="st">Conectando...</span></div>
+    <div class="pill">Comidos: <span id="com">0</span></div>
+    <div class="pill">Comida en agua: <span id="cnt">0</span></div>
+    <button id="btnSensor" style="display:none;">Activar movimiento</button>
+  </div>
+  <canvas id="c"></canvas>
+  <script>
+    const SALA_ID = "circulo-sala-1";
+    const c = document.getElementById("c"), ctx = c.getContext("2d");
+    function resize() { c.width = innerWidth; c.height = innerHeight; }
+    resize();
+    addEventListener("resize", resize);
+
+    const foodR = 13;
+    let conn = null;
+    let connected = false;
+    let comidos = 0;
+    let agitarAgua = 0;
+
+    let foods = [];
+
+    // Cardumen de peces
+    const coloresPez = ["#38bdf8", "#f472b6", "#a78bfa", "#34d399", "#fb7185"];
+    const fishes = Array.from({ length: 6 }, (_, i) => ({
+      x: c.width * (0.25 + (i % 3) * 0.25),
+      y: c.height * (0.25 + Math.floor(i / 3) * 0.45),
+      vx: (Math.random() - 0.5) * 140,
+      vy: (Math.random() - 0.5) * 140,
+      angle: 0,
+      size: 16 + (i % 3) * 4,
+      color: coloresPez[i % coloresPez.length],
+      phase: Math.random() * Math.PI * 2
+    }));
+
+    function actualizarHud() {
+      document.getElementById("com").textContent = comidos;
+      document.getElementById("cnt").textContent = foods.length;
+    }
+
+    // Mover el celular agita el agua y anima a los peces a nadar más rápido
+    let lastShake = 0;
+    function onMotion(e) {
+      const acc = e.accelerationIncludingGravity || e.acceleration;
+      if (!acc) return;
+      const x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
+      const delta = Math.abs(Math.hypot(x, y, z) - 9.81);
+      const now = performance.now();
+      if (delta > 5 && now - lastShake > 160) {
+        lastShake = now;
+        agitarAgua = 1.2;
+      }
+    }
+
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const btn = document.getElementById("btnSensor");
+      btn.style.display = "inline-block";
+      btn.addEventListener("click", async () => {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res === "granted") {
+            addEventListener("devicemotion", onMotion);
+            btn.style.display = "none";
+          }
+        } catch (_) {}
+      });
+    } else if ("DeviceMotionEvent" in window) {
+      addEventListener("devicemotion", onMotion);
+    }
+
+    // Tocar la pantalla también llama a los peces o deja una miga local de prueba
+    c.addEventListener("pointerdown", e => {
+      const rect = c.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      agitarAgua = 0.9;
+      for (const fish of fishes) {
+        const dx = px - fish.x;
+        const dy = py - fish.y;
+        const len = Math.hypot(dx, dy) || 1;
+        fish.vx += (dx / len) * 160;
+        fish.vy += (dy / len) * 160;
+      }
+    });
+
+    const peer = new Peer();
+
+    function intentarConectar() {
+      if (connected) return;
+      document.getElementById("st").textContent = "Conectando...";
+      conn = peer.connect(SALA_ID, { reliable: true });
+
+      conn.on("open", () => {
+        connected = true;
+        document.getElementById("st").textContent = "Conectado";
+      });
+
+      conn.on("data", msg => {
+        if (!msg || typeof msg !== "object") return;
+        if (msg.type === "COMIDA_NUEVA") {
+          foods.push({
+            x: foodR + 2,
+            y: Math.max(foodR, Math.min(c.height - foodR, msg.ny * c.height)),
+            vx: Math.max(140, Math.abs(msg.vx || 240) * 0.75),
+            vy: (msg.vy || 0) * 0.75,
+            color: msg.color || "#fbbf24"
+          });
+          actualizarHud();
+        }
+      });
+
+      conn.on("close", () => {
+        connected = false;
+        document.getElementById("st").textContent = "Reintentando...";
+      });
+
+      conn.on("error", () => {
+        connected = false;
+      });
+    }
+
+    peer.on("open", () => {
+      intentarConectar();
+      setInterval(() => {
+        if (!connected) intentarConectar();
+      }, 2000);
+    });
+
+    peer.on("error", () => {
+      connected = false;
+    });
+
+    function dibujarPez(fish, nowSec) {
+      const wag = Math.sin(nowSec * 12 + fish.phase) * 0.35;
+      ctx.save();
+      ctx.translate(fish.x, fish.y);
+      ctx.rotate(fish.angle);
+
+      // Cola
+      ctx.fillStyle = fish.color;
+      ctx.beginPath();
+      ctx.moveTo(-fish.size * 0.7, 0);
+      ctx.lineTo(-fish.size * 1.35, -fish.size * 0.45 + wag * 12);
+      ctx.lineTo(-fish.size * 1.35, fish.size * 0.45 + wag * 12);
+      ctx.closePath();
+      ctx.fill();
+
+      // Cuerpo
+      ctx.beginPath();
+      ctx.ellipse(0, 0, fish.size, fish.size * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ojo
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.arc(fish.size * 0.48, -fish.size * 0.14, fish.size * 0.13, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+      const nowSec = now / 1000;
+
+      ctx.fillStyle = agitarAgua > 0 ? "#115e59" : "#042f2e";
+      if (agitarAgua > 0) agitarAgua = Math.max(0, agitarAgua - dt);
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      // Actualiza comida
+      const comidasRestantes = [];
+      for (const f of foods) {
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+        f.vx *= 0.992;
+        f.vy *= 0.992;
+
+        if (f.y - foodR < 0) {
+          f.y = foodR;
+          f.vy = Math.abs(f.vy);
+        } else if (f.y + foodR > c.height) {
+          f.y = c.height - foodR;
+          f.vy = -Math.abs(f.vy);
+        }
+
+        if (f.x + foodR > c.width) {
+          f.x = c.width - foodR;
+          f.vx = -Math.abs(f.vx);
+        }
+
+        // Si sale por la izquierda sin haber sido comida, vuelve al otro celular
+        if (f.x + foodR < 0) {
+          if (conn && conn.open) {
+            conn.send({
+              type: "DEVOLVER_COMIDA",
+              ny: f.y / Math.max(1, c.height),
+              vx: f.vx,
+              vy: f.vy
+            });
+            continue;
+          } else {
+            f.x = foodR;
+            f.vx = Math.abs(f.vx);
+          }
+        }
+
+        comidasRestantes.push(f);
+      }
+      foods = comidasRestantes;
+
+      // Actualiza peces: persiguen la comida más cercana o nadan libres
+      for (const fish of fishes) {
+        let objetivo = null;
+        let mejorDist = Infinity;
+        for (const f of foods) {
+          const d = Math.hypot(f.x - fish.x, f.y - fish.y);
+          if (d < mejorDist) {
+            mejorDist = d;
+            objetivo = f;
+          }
+        }
+
+        const speedBoost = agitarAgua > 0 ? 1.55 : 1.0;
+
+        if (objetivo) {
+          const dx = objetivo.x - fish.x;
+          const dy = objetivo.y - fish.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          const chaseSpeed = 240 * speedBoost;
+          fish.vx += ((dx / dist) * chaseSpeed - fish.vx) * 4.5 * dt;
+          fish.vy += ((dy / dist) * chaseSpeed - fish.vy) * 4.5 * dt;
+
+          // Comer comida
+          if (dist < fish.size + foodR) {
+            const idx = foods.indexOf(objetivo);
+            if (idx !== -1) {
+              foods.splice(idx, 1);
+              comidos++;
+              fish.size = Math.min(30, fish.size + 0.6);
+              actualizarHud();
+            }
+          }
+        } else {
+          fish.vx += Math.cos(nowSec * 1.4 + fish.phase) * 90 * dt;
+          fish.vy += Math.sin(nowSec * 1.1 + fish.phase) * 90 * dt;
+          const maxCruise = 130 * speedBoost;
+          const spd = Math.hypot(fish.vx, fish.vy);
+          if (spd > maxCruise) {
+            fish.vx = (fish.vx / spd) * maxCruise;
+            fish.vy = (fish.vy / spd) * maxCruise;
+          }
+        }
+
+        fish.x += fish.vx * dt;
+        fish.y += fish.vy * dt;
+
+        if (fish.x < fish.size) { fish.x = fish.size; fish.vx = Math.abs(fish.vx); }
+        if (fish.x > c.width - fish.size) { fish.x = c.width - fish.size; fish.vx = -Math.abs(fish.vx); }
+        if (fish.y < fish.size) { fish.y = fish.size; fish.vy = Math.abs(fish.vy); }
+        if (fish.y > c.height - fish.size) { fish.y = c.height - fish.size; fish.vy = -Math.abs(fish.vy); }
+
+        if (Math.hypot(fish.vx, fish.vy) > 5) {
+          fish.angle = Math.atan2(fish.vy, fish.vx);
+        }
+      }
+
+      // Dibuja comidas
+      for (const f of foods) {
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, foodR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Dibuja peces
+      for (const fish of fishes) {
+        dibujarPez(fish, nowSec);
+      }
+
+      actualizarHud();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
