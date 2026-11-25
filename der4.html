@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Derecha - Juego</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { margin: 0; background: #0f172a; color: #fff; font-family: sans-serif; overflow: hidden; touch-action: none; }
+    .hud { position: fixed; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; pointer-events: none; }
+    .pill { background: #1e293b; padding: 6px 10px; border-radius: 6px; }
+    button { pointer-events: auto; background: #0284c7; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="pill"><span id="st">Conectando...</span></div>
+    <div class="pill">Puntos: <span id="pts">0</span></div>
+    <div class="pill">Vel: <span id="vel">0</span></div>
+    <div class="pill" id="esqTag">Esquina: no</div>
+    <button id="btnSensor" style="display:none;">Activar movimiento</button>
+  </div>
+  <canvas id="c"></canvas>
+  <script>
+    const SALA_ID = "circulo-sala-1";
+    const c = document.getElementById("c"), ctx = c.getContext("2d");
+    function resize() { c.width = innerWidth; c.height = innerHeight; }
+    resize();
+    addEventListener("resize", resize);
+
+    const r = 22;
+    const minSpeed = 200;
+    const maxSpeed = 1200;
+    const esquinaRadio = 135;
+
+    let conn = null;
+    let connected = false;
+    let ball = null;
+    let puntos = 0;
+    let flash = 0;
+
+    function esquinaCercana(b) {
+      if (!b) return null;
+      const esquinas = [
+        { x: 0, y: 0 },
+        { x: c.width, y: 0 },
+        { x: 0, y: c.height },
+        { x: c.width, y: c.height }
+      ];
+      for (const e of esquinas) {
+        if (Math.hypot(b.x - e.x, b.y - e.y) <= esquinaRadio) {
+          return e;
+        }
+      }
+      return null;
+    }
+
+    function actualizarHud() {
+      const spd = ball ? Math.round(Math.hypot(ball.vx, ball.vy)) : 0;
+      document.getElementById("vel").textContent = spd;
+      document.getElementById("esqTag").textContent = esquinaCercana(ball) ? "Esquina: SI" : "Esquina: no";
+    }
+
+    function acelerarEnEsquina(intensidad, dirX, dirY) {
+      if (!ball) return;
+      const esq = esquinaCercana(ball);
+      if (!esq) return;
+
+      const actual = Math.hypot(ball.vx, ball.vy);
+      const empuje = Math.min(850, Math.max(260, intensidad * 65));
+      const nuevaVel = Math.min(maxSpeed, Math.max(minSpeed, actual * 0.8 + empuje));
+
+      let vxDir = ball.vx;
+      let vyDir = ball.vy;
+      if (Math.abs(dirX) > 0.2 || Math.abs(dirY) > 0.2) {
+        vxDir = ball.vx * 0.5 + dirX * 220;
+        vyDir = ball.vy * 0.5 + dirY * 220;
+      }
+      const len = Math.hypot(vxDir, vyDir) || 1;
+      ball.vx = (vxDir / len) * nuevaVel;
+      ball.vy = (vyDir / len) * nuevaVel;
+
+      flash = 0.25;
+      puntos++;
+      document.getElementById("pts").textContent = puntos;
+      actualizarHud();
+    }
+
+    let lastMotionTime = 0;
+    function onMotion(e) {
+      if (!ball || !esquinaCercana(ball)) return;
+
+      const acc = e.accelerationIncludingGravity || e.acceleration;
+      const rot = e.rotationRate;
+      const ax = acc ? (acc.x || 0) : 0;
+      const ay = acc ? (acc.y || 0) : 0;
+      const az = acc ? (acc.z || 0) : 0;
+      const deltaAcc = Math.abs(Math.hypot(ax, ay, az) - 9.81);
+      const giro = rot ? Math.hypot(rot.alpha || 0, rot.beta || 0, rot.gamma || 0) : 0;
+
+      const fuerzaTotal = Math.max(deltaAcc, giro * 0.08);
+      const now = performance.now();
+
+      if (fuerzaTotal > 4.5 && now - lastMotionTime > 150) {
+        lastMotionTime = now;
+        const gX = rot ? (rot.gamma || 0) / 45 : ax / 8;
+        const gY = rot ? (rot.beta || 0) / 45 : -ay / 8;
+        acelerarEnEsquina(fuerzaTotal, gX, gY);
+      }
+    }
+
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const btn = document.getElementById("btnSensor");
+      btn.style.display = "inline-block";
+      btn.addEventListener("click", async () => {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res === "granted") {
+            addEventListener("devicemotion", onMotion);
+            btn.style.display = "none";
+          }
+        } catch (_) {}
+      });
+    } else if ("DeviceMotionEvent" in window) {
+      addEventListener("devicemotion", onMotion);
+    }
+
+    c.addEventListener("pointerdown", e => {
+      if (!ball || !esquinaCercana(ball)) return;
+      const rect = c.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      acelerarEnEsquina(9, ball.x - px, ball.y - py);
+    });
+
+    const peer = new Peer();
+
+    function intentarConectar() {
+      if (connected) return;
+      document.getElementById("st").textContent = "Conectando...";
+      conn = peer.connect(SALA_ID, { reliable: true });
+
+      conn.on("open", () => {
+        connected = true;
+        document.getElementById("st").textContent = "Conectado";
+      });
+
+      conn.on("data", msg => {
+        if (!msg || typeof msg !== "object") return;
+        if (msg.type === "PASE_DER") {
+          ball = {
+            x: r + 2,
+            y: Math.max(r, Math.min(c.height - r, msg.ny * c.height)),
+            vx: Math.min(maxSpeed, Math.max(minSpeed, Math.abs(msg.vx))),
+            vy: msg.vy
+          };
+          actualizarHud();
+        }
+      });
+
+      conn.on("close", () => {
+        connected = false;
+        document.getElementById("st").textContent = "Reintentando...";
+      });
+
+      conn.on("error", () => {
+        connected = false;
+      });
+    }
+
+    peer.on("open", () => {
+      intentarConectar();
+      setInterval(() => {
+        if (!connected) intentarConectar();
+      }, 2000);
+    });
+
+    peer.on("error", () => {
+      connected = false;
+    });
+
+    function dibujarEsquinas() {
+      const esquinas = [
+        [0, 0],
+        [c.width, 0],
+        [0, c.height],
+        [c.width, c.height]
+      ];
+      const activa = esquinaCercana(ball);
+      ctx.save();
+      for (const [ex, ey] of esquinas) {
+        ctx.beginPath();
+        ctx.arc(ex, ey, esquinaRadio, 0, Math.PI * 2);
+        ctx.strokeStyle = activa ? "rgba(56, 189, 248, 0.45)" : "rgba(148, 163, 184, 0.12)";
+        ctx.lineWidth = activa ? 2.5 : 1.5;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+
+      ctx.fillStyle = flash > 0 ? "#1e3a8a" : "#0f172a";
+      if (flash > 0) flash = Math.max(0, flash - dt);
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      dibujarEsquinas();
+
+      if (ball) {
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
+
+        if (ball.y - r < 0) {
+          ball.y = r;
+          ball.vy = Math.abs(ball.vy);
+        } else if (ball.y + r > c.height) {
+          ball.y = c.height - r;
+          ball.vy = -Math.abs(ball.vy);
+        }
+
+        if (ball.x + r > c.width) {
+          ball.x = c.width - r;
+          ball.vx = -Math.abs(ball.vx);
+        }
+
+        if (ball.x + r < 0) {
+          if (conn && conn.open) {
+            conn.send({
+              type: "PASE_IZQ",
+              ny: ball.y / Math.max(1, c.height),
+              vx: ball.vx,
+              vy: ball.vy
+            });
+            ball = null;
+            actualizarHud();
+          } else {
+            ball.x = r;
+            ball.vx = Math.abs(ball.vx);
+          }
+        }
+
+        if (ball) {
+          actualizarHud();
+          ctx.fillStyle = esquinaCercana(ball) ? "#7dd3fc" : "#38bdf8";
+          ctx.beginPath();
+          ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
