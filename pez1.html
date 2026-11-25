@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Izquierda - Comida</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { margin: 0; background: #082f49; color: #f0f9ff; font-family: sans-serif; overflow: hidden; touch-action: none; }
+    .hud { position: fixed; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; pointer-events: none; z-index: 10; }
+    .pill { background: rgba(15, 23, 42, 0.8); padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(125, 211, 252, 0.2); }
+    button { pointer-events: auto; background: #0284c7; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="pill">Comida | <span id="st">Esperando</span></div>
+    <div class="pill">Enviadas: <span id="env">0</span></div>
+    <div class="pill">Vel: <span id="vel">0</span></div>
+    <div class="pill" id="esqTag">Esquina: no</div>
+    <button id="btnSensor" style="display:none;">Activar movimiento</button>
+  </div>
+  <canvas id="c"></canvas>
+  <script>
+    const SALA_ID = "circulo-sala-1";
+    const c = document.getElementById("c"), ctx = c.getContext("2d");
+    function resize() { c.width = innerWidth; c.height = innerHeight; }
+    resize();
+    addEventListener("resize", resize);
+
+    const r = 14;
+    const minSpeed = 160;
+    const maxSpeed = 1150;
+    const esquinaRadio = 135;
+
+    let conn = null;
+    let enviadas = 0;
+    let flash = 0;
+
+    function crearComida(x, y, vx = 240, vy = 120) {
+      const tipos = ["#fbbf24", "#fb923c", "#fde047"];
+      return {
+        x,
+        y,
+        vx,
+        vy,
+        color: tipos[Math.floor(Math.random() * tipos.length)]
+      };
+    }
+
+    // Puede haber varias migas/bolitas de comida en pantalla
+    let foods = [
+      crearComida(c.width * 0.3, c.height * 0.45, 250, 140)
+    ];
+
+    function esquinaCercana(f) {
+      if (!f) return null;
+      const esquinas = [
+        { x: 0, y: 0 },
+        { x: c.width, y: 0 },
+        { x: 0, y: c.height },
+        { x: c.width, y: c.height }
+      ];
+      for (const e of esquinas) {
+        if (Math.hypot(f.x - e.x, f.y - e.y) <= esquinaRadio) {
+          return e;
+        }
+      }
+      return null;
+    }
+
+    function actualizarHud() {
+      const f = foods[0];
+      const spd = f ? Math.round(Math.hypot(f.vx, f.vy)) : 0;
+      document.getElementById("vel").textContent = spd;
+      const hayEnEsquina = foods.some(item => esquinaCercana(item));
+      document.getElementById("esqTag").textContent = hayEnEsquina ? "Esquina: SI" : "Esquina: no";
+    }
+
+    function acelerarEnEsquina(intensidad, dirX, dirY) {
+      let aceleroAlguna = false;
+      for (const f of foods) {
+        if (!esquinaCercana(f)) continue;
+        aceleroAlguna = true;
+
+        const actual = Math.hypot(f.vx, f.vy);
+        const empuje = Math.min(850, Math.max(260, intensidad * 65));
+        const nuevaVel = Math.min(maxSpeed, Math.max(minSpeed, actual * 0.8 + empuje));
+
+        let vxDir = f.vx;
+        let vyDir = f.vy;
+        if (Math.abs(dirX) > 0.2 || Math.abs(dirY) > 0.2) {
+          vxDir = f.vx * 0.5 + dirX * 220;
+          vyDir = f.vy * 0.5 + dirY * 220;
+        }
+        const len = Math.hypot(vxDir, vyDir) || 1;
+        f.vx = (vxDir / len) * nuevaVel;
+        f.vy = (vyDir / len) * nuevaVel;
+      }
+
+      if (aceleroAlguna) {
+        flash = 0.25;
+        actualizarHud();
+      }
+    }
+
+    // Mover o inclinar el celular también lanza/reparte comida hacia la derecha
+    let lastMotionTime = 0;
+    function onMotion(e) {
+      const acc = e.accelerationIncludingGravity || e.acceleration;
+      const rot = e.rotationRate;
+      const ax = acc ? (acc.x || 0) : 0;
+      const ay = acc ? (acc.y || 0) : 0;
+      const az = acc ? (acc.z || 0) : 0;
+      const deltaAcc = Math.abs(Math.hypot(ax, ay, az) - 9.81);
+      const giro = rot ? Math.hypot(rot.alpha || 0, rot.beta || 0, rot.gamma || 0) : 0;
+      const fuerzaTotal = Math.max(deltaAcc, giro * 0.08);
+      const now = performance.now();
+
+      if (fuerzaTotal > 4.5 && now - lastMotionTime > 180) {
+        lastMotionTime = now;
+        const gX = rot ? (rot.gamma || 0) / 45 : ax / 8;
+        const gY = rot ? (rot.beta || 0) / 45 : -ay / 8;
+
+        // Si alguna comida está en esquina, la acelera fuerte desde ahí
+        acelerarEnEsquina(fuerzaTotal, gX, gY);
+
+        // Si hay menos de 4 bolitas, suelta una nueva comida impulsada hacia la derecha
+        if (foods.length < 4) {
+          const yPos = Math.max(r * 2, Math.min(c.height - r * 2, c.height * (0.25 + Math.random() * 0.5)));
+          const vx = Math.min(maxSpeed, Math.max(260, 280 + fuerzaTotal * 35));
+          const vy = (Math.random() - 0.5) * 260 + gY * 90;
+          foods.push(crearComida(c.width * 0.35, yPos, vx, vy));
+        }
+      }
+    }
+
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const btn = document.getElementById("btnSensor");
+      btn.style.display = "inline-block";
+      btn.addEventListener("click", async () => {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res === "granted") {
+            addEventListener("devicemotion", onMotion);
+            btn.style.display = "none";
+          }
+        } catch (_) {}
+      });
+    } else if ("DeviceMotionEvent" in window) {
+      addEventListener("devicemotion", onMotion);
+    }
+
+    // Tocar la pantalla suelta o lanza comida hacia los peces
+    c.addEventListener("pointerdown", e => {
+      const rect = c.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+
+      // Si tocó cerca de una comida en esquina, la acelera
+      for (const f of foods) {
+        if (esquinaCercana(f) && Math.hypot(f.x - px, f.y - py) < esquinaRadio) {
+          acelerarEnEsquina(9.5, f.x - px, f.y - py);
+          return;
+        }
+      }
+
+      if (foods.length < 5) {
+        const ang = Math.atan2(c.height * 0.5 - py, c.width - px);
+        foods.push(crearComida(px, py, Math.cos(ang) * 340, Math.sin(ang) * 340));
+      }
+    });
+
+    const peer = new Peer(SALA_ID);
+    peer.on("connection", p => {
+      conn = p;
+      conn.on("open", () => {
+        document.getElementById("st").textContent = "Conectado";
+        if (foods.length === 0) {
+          foods.push(crearComida(c.width * 0.3, c.height * 0.5, 280, 110));
+        }
+      });
+      conn.on("data", msg => {
+        if (!msg || typeof msg !== "object") return;
+        // Si los peces devuelven una comida que no se comieron
+        if (msg.type === "DEVOLVER_COMIDA") {
+          foods.push(crearComida(
+            c.width - r - 2,
+            Math.max(r, Math.min(c.height - r, msg.ny * c.height)),
+            -Math.min(maxSpeed, Math.max(minSpeed, Math.abs(msg.vx || 240))),
+            msg.vy || 0
+          ));
+        }
+      });
+      conn.on("close", () => {
+        document.getElementById("st").textContent = "Desconectado";
+      });
+    });
+
+    function dibujarEsquinas() {
+      const esquinas = [
+        [0, 0],
+        [c.width, 0],
+        [0, c.height],
+        [c.width, c.height]
+      ];
+      const activa = foods.some(item => esquinaCercana(item));
+      ctx.save();
+      for (const [ex, ey] of esquinas) {
+        ctx.beginPath();
+        ctx.arc(ex, ey, esquinaRadio, 0, Math.PI * 2);
+        ctx.strokeStyle = activa ? "rgba(251, 191, 36, 0.5)" : "rgba(148, 163, 184, 0.14)";
+        ctx.lineWidth = activa ? 2.5 : 1.5;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+
+      ctx.fillStyle = flash > 0 ? "#0c4a6e" : "#082f49";
+      if (flash > 0) flash = Math.max(0, flash - dt);
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      dibujarEsquinas();
+
+      const restantes = [];
+      for (const f of foods) {
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+
+        if (f.y - r < 0) {
+          f.y = r;
+          f.vy = Math.abs(f.vy);
+        } else if (f.y + r > c.height) {
+          f.y = c.height - r;
+          f.vy = -Math.abs(f.vy);
+        }
+
+        if (f.x - r < 0) {
+          f.x = r;
+          f.vx = Math.abs(f.vx);
+        }
+
+        if (f.x - r > c.width) {
+          if (conn && conn.open) {
+            conn.send({
+              type: "COMIDA_NUEVA",
+              ny: f.y / Math.max(1, c.height),
+              vx: f.vx,
+              vy: f.vy,
+              color: f.color
+            });
+            enviadas++;
+            document.getElementById("env").textContent = enviadas;
+            continue;
+          } else {
+            f.x = c.width - r;
+            f.vx = -Math.abs(f.vx);
+          }
+        }
+
+        // Dibuja bolita de comida con brillo
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255,255,255,0.45)";
+        ctx.beginPath();
+        ctx.arc(f.x - r * 0.3, f.y - r * 0.3, r * 0.32, 0, Math.PI * 2);
+        ctx.fill();
+
+        restantes.push(f);
+      }
+
+      foods = restantes;
+      if (foods.length === 0 && (!conn || !conn.open)) {
+        foods.push(crearComida(c.width * 0.25, c.height * 0.5, 250, 140));
+      }
+
+      actualizarHud();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
