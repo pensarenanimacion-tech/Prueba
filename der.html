@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Derecha</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { margin: 0; background: #0f172a; color: #fff; font-family: sans-serif; overflow: hidden; }
+    .hud { position: fixed; top: 8px; left: 8px; font-size: 13px; background: #1e293b; padding: 6px 10px; border-radius: 6px; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <span id="st">Conectando...</span>
+  </div>
+  <canvas id="c"></canvas>
+  <script>
+    const SALA_ID = "circulo-sala-1";
+    const c = document.getElementById("c"), ctx = c.getContext("2d");
+    c.width = innerWidth; c.height = innerHeight;
+    addEventListener("resize", () => { c.width = innerWidth; c.height = innerHeight; });
+
+    let conn = null;
+    let x = null;
+    const r = 22, speed = 250;
+
+    const peer = new Peer();
+    peer.on("open", () => {
+      conn = peer.connect(SALA_ID);
+      conn.on("open", () => {
+        document.getElementById("st").textContent = "Conectado";
+        last = performance.now();
+      });
+      conn.on("data", msg => {
+        if (msg === "PASAR") {
+          x = -25;
+          last = performance.now();
+        }
+      });
+      conn.on("close", () => {
+        document.getElementById("st").textContent = "Desconectado";
+      });
+    });
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      if (x !== null) {
+        x += speed * dt;
+        ctx.fillStyle = "#38bdf8";
+        ctx.beginPath();
+        ctx.arc(x, c.height / 2, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (x - r > c.width) {
+          if (conn && conn.open) conn.send("FIN");
+          x = null;
+        }
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
