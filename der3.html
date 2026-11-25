@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Derecha - Juego</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { margin: 0; background: #0f172a; color: #fff; font-family: sans-serif; overflow: hidden; touch-action: none; }
+    .hud { position: fixed; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; pointer-events: none; }
+    .pill { background: #1e293b; padding: 6px 10px; border-radius: 6px; }
+    button { pointer-events: auto; background: #0284c7; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div class="pill"><span id="st">Conectando...</span></div>
+    <div class="pill">Puntos: <span id="pts">0</span></div>
+    <div class="pill">Vel: <span id="vel">0</span></div>
+    <div class="pill" id="estadoAlineacion">Zona pase: centro</div>
+    <button id="btnSensor" style="display:none;">Activar movimiento</button>
+  </div>
+  <canvas id="c"></canvas>
+  <script>
+    const SALA_ID = "circulo-sala-1";
+    const c = document.getElementById("c"), ctx = c.getContext("2d");
+    function resize() { c.width = innerWidth; c.height = innerHeight; }
+    resize();
+    addEventListener("resize", resize);
+
+    const r = 22;
+    const minSpeed = 200;
+    const maxSpeed = 1150;
+    const ALINEACION_MIN = 0.25;
+    const ALINEACION_MAX = 0.75;
+
+    let conn = null;
+    let connected = false;
+    let ball = null;
+    let puntos = 0;
+    let flash = 0;
+    let fueraDeAltura = false;
+
+    function estaAlineado(ny) {
+      return ny >= ALINEACION_MIN && ny <= ALINEACION_MAX;
+    }
+
+    function actualizarHudVel() {
+      const spd = ball ? Math.round(Math.hypot(ball.vx, ball.vy)) : 0;
+      document.getElementById("vel").textContent = spd;
+    }
+
+    function actualizarEstadoZona(texto) {
+      document.getElementById("estadoAlineacion").textContent = texto;
+    }
+
+    function sumarPunto() {
+      puntos++;
+      document.getElementById("pts").textContent = puntos;
+    }
+
+    function relanzarBolaLocal(dirX = -1, dirY = -0.45, fuerza = 360) {
+      fueraDeAltura = false;
+      const yInicial = c.height * ((ALINEACION_MIN + ALINEACION_MAX) * 0.5);
+      ball = {
+        x: c.width * 0.75,
+        y: yInicial,
+        vx: 0,
+        vy: 0
+      };
+      aplicarImpulso(dirX, dirY, fuerza, true);
+      actualizarEstadoZona("Zona pase: centro");
+    }
+
+    function aplicarImpulso(dx, dy, fuerzaGolpe, esCerca = false) {
+      if (!ball) return;
+      const len = Math.hypot(dx, dy) || 1;
+      const dirX = dx / len;
+      const dirY = dy / len;
+
+      const bonusCercania = esCerca ? 1.35 : 1.0;
+      const actual = Math.hypot(ball.vx, ball.vy);
+      const nuevaVel = Math.min(
+        maxSpeed,
+        Math.max(minSpeed, actual * 0.75 + fuerzaGolpe * bonusCercania)
+      );
+
+      ball.vx = dirX * nuevaVel;
+      ball.vy = dirY * nuevaVel;
+      flash = esCerca ? 0.32 : 0.2;
+      sumarPunto();
+      actualizarHudVel();
+    }
+
+    function golpearDesdeMovimiento(ax, ay) {
+      const intensidad = Math.hypot(ax, ay);
+      const fuerza = Math.min(920, Math.max(240, (intensidad - 5) * 42));
+
+      if (!ball) {
+        relanzarBolaLocal(ax !== 0 ? ax : -1, -ay || -0.4, fuerza);
+        if (conn && conn.open) {
+          conn.send({ type: "GOLPE", ax, ay, fuerza });
+        }
+        return;
+      }
+
+      const vxActual = ball.vx || -240;
+      const vyActual = ball.vy || 160;
+      const dirX = Math.abs(ax) > 1.5 ? ax : vxActual;
+      const dirY = Math.abs(ay) > 1.5 ? ay : vyActual;
+
+      aplicarImpulso(dirX, dirY, fuerza, true);
+    }
+
+    let lastShake = 0;
+    function onMotion(e) {
+      const acc = e.accelerationIncludingGravity || e.acceleration;
+      if (!acc) return;
+      const x = acc.x || 0;
+      const y = acc.y || 0;
+      const z = acc.z || 0;
+      const delta = Math.hypot(x, y, z) - 9.81;
+      const now = performance.now();
+
+      if (Math.abs(delta) > 5.2 && now - lastShake > 140) {
+        lastShake = now;
+        golpearDesdeMovimiento(x, -y);
+      }
+    }
+
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const btn = document.getElementById("btnSensor");
+      btn.style.display = "inline-block";
+      btn.addEventListener("click", async () => {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res === "granted") {
+            addEventListener("devicemotion", onMotion);
+            btn.style.display = "none";
+          }
+        } catch (_) {}
+      });
+    } else if ("DeviceMotionEvent" in window) {
+      addEventListener("devicemotion", onMotion);
+    }
+
+    function impactarPunto(px, py) {
+      if (!ball) {
+        relanzarBolaLocal(-1, -0.4, 420);
+        return;
+      }
+      const dx = ball.x - px;
+      const dy = ball.y - py;
+      const dist = Math.hypot(dx, dy);
+      const radioImpacto = r * 4.5;
+      const cercania = Math.max(0, 1 - dist / radioImpacto);
+      const fuerza = 320 + cercania * 560;
+
+      aplicarImpulso(dx, dy, fuerza, dist <= radioImpacto);
+    }
+
+    c.addEventListener("pointerdown", e => {
+      const rect = c.getBoundingClientRect();
+      impactarPunto(e.clientX - rect.left, e.clientY - rect.top);
+    });
+
+    c.addEventListener("pointermove", e => {
+      if (e.buttons === 0 && e.pressure === 0) return;
+      const rect = c.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      if (ball && Math.hypot(ball.x - px, ball.y - py) < r * 2.2) {
+        impactarPunto(px, py);
+      }
+    });
+
+    const peer = new Peer();
+
+    function intentarConectar() {
+      if (connected) return;
+      document.getElementById("st").textContent = "Conectando...";
+      conn = peer.connect(SALA_ID, { reliable: true });
+
+      conn.on("open", () => {
+        connected = true;
+        document.getElementById("st").textContent = "Conectado";
+      });
+
+      conn.on("data", msg => {
+        if (!msg || typeof msg !== "object") return;
+        if (msg.type === "PASE_DER") {
+          if (estaAlineado(msg.ny)) {
+            fueraDeAltura = false;
+            ball = {
+              x: r + 2,
+              y: Math.max(r, Math.min(c.height - r, msg.ny * c.height)),
+              vx: Math.min(maxSpeed, Math.max(minSpeed, Math.abs(msg.vx))),
+              vy: msg.vy
+            };
+            actualizarEstadoZona("Pase alineado");
+            actualizarHudVel();
+          } else {
+            // Fuera de la altura alineada: no se dibuja nada en este celular
+            ball = null;
+            fueraDeAltura = true;
+            actualizarEstadoZona("Fuera de altura (sin bola)");
+            actualizarHudVel();
+          }
+        } else if (msg.type === "GOLPE" && ball) {
+          const fuerza = msg.fuerza || 360;
+          aplicarImpulso(Math.abs(ball.vx) || 260, (msg.ay || 0) * 20, fuerza * 0.85, false);
+        }
+      });
+
+      conn.on("close", () => {
+        connected = false;
+        document.getElementById("st").textContent = "Reintentando...";
+      });
+
+      conn.on("error", () => {
+        connected = false;
+      });
+    }
+
+    peer.on("open", () => {
+      intentarConectar();
+      setInterval(() => {
+        if (!connected) intentarConectar();
+      }, 2000);
+    });
+
+    peer.on("error", () => {
+      connected = false;
+    });
+
+    function dibujarGuiaAlineacion() {
+      const yTop = c.height * ALINEACION_MIN;
+      const yBot = c.height * ALINEACION_MAX;
+      ctx.save();
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.25)";
+      ctx.lineWidth = 3;
+      ctx.setLineDash([6, 6]);
+      // Marca en el borde izquierdo (donde recibe del otro celular)
+      ctx.beginPath();
+      ctx.moveTo(4, yTop);
+      ctx.lineTo(4, yBot);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+
+      ctx.fillStyle = flash > 0 ? "#1e3a8a" : "#0f172a";
+      if (flash > 0) flash = Math.max(0, flash - dt);
+      ctx.fillRect(0, 0, c.width, c.height);
+
+      dibujarGuiaAlineacion();
+
+      if (ball) {
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
+
+        if (ball.y - r < 0) {
+          ball.y = r;
+          ball.vy = Math.abs(ball.vy);
+        } else if (ball.y + r > c.height) {
+          ball.y = c.height - r;
+          ball.vy = -Math.abs(ball.vy);
+        }
+
+        if (ball.x + r > c.width) {
+          ball.x = c.width - r;
+          ball.vx = -Math.abs(ball.vx);
+        }
+
+        if (ball.x + r < 0) {
+          const ny = ball.y / Math.max(1, c.height);
+          if (conn && conn.open) {
+            conn.send({
+              type: "PASE_IZQ",
+              ny,
+              vx: ball.vx,
+              vy: ball.vy
+            });
+            ball = null;
+            fueraDeAltura = !estaAlineado(ny);
+            actualizarHudVel();
+          } else {
+            ball.x = r;
+            ball.vx = Math.abs(ball.vx);
+          }
+        }
+
+        if (ball) {
+          actualizarHudVel();
+          ctx.fillStyle = "#38bdf8";
+          ctx.beginPath();
+          ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
