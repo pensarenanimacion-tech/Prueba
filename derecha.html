@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Pez 2 - Cardumen (Derecha)</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: radial-gradient(circle at 80% 50%, #06374a 0%, #031926 100%);
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #e2e8f0;
+      touch-action: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #hud {
+      position: fixed; top: 10px; left: 10px; right: 10px;
+      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+      gap: 8px; pointer-events: none; z-index: 10;
+    }
+    .badge {
+      background: rgba(6, 24, 38, 0.75);
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      backdrop-filter: blur(6px);
+      padding: 6px 12px; border-radius: 999px;
+      font-size: 13px; font-weight: 600;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #ef4444; }
+    .dot.ok { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .dot.wait { background: #f59e0b; }
+    #btnMotion {
+      pointer-events: auto;
+      background: #0d9488; color: #fff; border: none;
+      padding: 6px 12px; border-radius: 999px;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    #portal-hint {
+      position: fixed; left: 6px; top: 50%; transform: translateY(-50%);
+      writing-mode: vertical-rl; text-orientation: mixed;
+      font-size: 11px; letter-spacing: 2px; color: rgba(45, 212, 191, 0.45);
+      pointer-events: none; font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="badge">
+      <span id="statusDot" class="dot wait"></span>
+      <span id="statusText">Iniciando sala...</span>
+    </div>
+    <div class="badge">
+      <span>Comidos: <strong id="eatenCount">0</strong></span>
+      <span>|</span>
+      <span>Agite: <strong id="agitationInfo">Calma</strong></span>
+    </div>
+    <button id="btnMotion">Activar Sensor</button>
+  </div>
+  <div id="portal-hint">⬅ PUENTE DE COMIDA</div>
+  <canvas id="fishCanvas"></canvas>
+
+  <script>
+    const ROOM_ID = "circulo-sala-1";
+    const canvas = document.getElementById("fishCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const eatenCountEl = document.getElementById("eatenCount");
+    const agitationInfoEl = document.getElementById("agitationInfo");
+    const btnMotion = document.getElementById("btnMotion");
+
+    let W = 0, H = 0;
+    function resize() {
+      W = canvas.width = window.innerWidth;
+      H = canvas.height = window.innerHeight;
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    // --- Estado del Acuario ---
+    let eatenCount = 0;
+    let foods = [];
+    let fishes = [];
+    let bubbles = [];
+    let ripples = [];
+    let agitation = 0; // 0 a 1
+    let lurePoint = null; // Punto táctil temporal que atrae a los peces
+
+    const FISH_PALETTES = [
+      { body: "#fb923c", fin: "#fef08a" },
+      { body: "#38bdf8", fin: "#bae6fd" },
+      { body: "#f472b6", fin: "#fbcfe8" },
+      { body: "#a3e635", fin: "#fef08a" },
+      { body: "#c084fc", fin: "#e9d5ff" },
+      { body: "#2dd4bf", fin: "#ccfbf1" }
+    ];
+
+    function createFish() {
+      const pal = FISH_PALETTES[Math.floor(Math.random() * FISH_PALETTES.length)];
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 1.6 + Math.random() * 1.2;
+      return {
+        x: W * (0.25 + Math.random() * 0.6),
+        y: H * (0.15 + Math.random() * 0.7),
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        size: 15 + Math.random() * 4,
+        maxSize: 34,
+        phase: Math.random() * Math.PI * 2,
+        palette: pal
+      };
+    }
+
+    // Crear cardumen de 7 peces
+    for (let i = 0; i < 7; i++) fishes.push(createFish());
+
+    // Burbujas ambientales
+    for (let i = 0; i < 18; i++) {
+      bubbles.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: 1.5 + Math.random() * 3,
+        vy: -(0.4 + Math.random() * 0.9)
+      });
+    }
+
+    function triggerAgitation(tx = null, ty = null) {
+      agitation = 1.0;
+      if (tx !== null && ty !== null) {
+        lurePoint = { x: tx, y: ty, life: 1.0 };
+        ripples.push({ x: tx, y: ty, r: 8, alpha: 0.95 });
+      }
+      // Impulso inmediato al cardumen
+      fishes.forEach(f => {
+        if (tx !== null && ty !== null) {
+          const ang = Math.atan2(ty - f.y, tx - f.x);
+          f.vx += Math.cos(ang) * 2.4;
+          f.vy += Math.sin(ang) * 2.4;
+        } else {
+          const ang = Math.atan2(f.vy, f.vx) + (Math.random() - 0.5) * 0.8;
+          f.vx += Math.cos(ang) * 2.2;
+          f.vy += Math.sin(ang) * 2.2;
+        }
+      });
+    }
+
+    // --- Interacción Táctil ---
+    canvas.addEventListener("pointerdown", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      triggerAgitation(e.clientX - rect.left, e.clientY - rect.top);
+    });
+
+    // --- Sensor de Movimiento ---
+    let lastShake = 0;
+    function handleMotion(e) {
+      const acc = e.acceleration || e.accelerationIncludingGravity;
+      if (!acc) return;
+      const mag = Math.hypot(acc.x || 0, acc.y || 0, acc.z || 0);
+      const threshold = e.acceleration ? 8.0 : 17.0;
+      if (mag > threshold) {
+        const now = Date.now();
+        if (now - lastShake > 250) {
+          lastShake = now;
+          triggerAgitation();
+        }
+      }
+    }
+
+    btnMotion.addEventListener("click", async () => {
+      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res === "granted") {
+            window.addEventListener("devicemotion", handleMotion);
+            btnMotion.textContent = "Sensor Activo ✓";
+            btnMotion.style.background = "#16a34a";
+          }
+        } catch (err) {
+          btnMotion.textContent = "Sin permiso";
+        }
+      } else {
+        window.addEventListener("devicemotion", handleMotion);
+        btnMotion.textContent = "Sensor Activo ✓";
+        btnMotion.style.background = "#16a34a";
+      }
+    });
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission !== "function") {
+      window.addEventListener("devicemotion", handleMotion);
+      btnMotion.textContent = "Sensor Listo ✓";
+      btnMotion.style.background = "#15803d";
+    }
+
+    // --- PeerJS Host (Sala fija ROOM_ID) ---
+    let peer = null;
+    let activeConn = null;
+    let retryTimer = null;
+
+    function setStatus(state, text) {
+      statusDot.className = "dot " + state;
+      statusText.textContent = text;
+    }
+
+    function startHost() {
+      if (peer && !peer.destroyed) peer.destroy();
+      setStatus("wait", "Abriendo sala...");
+
+      peer = new Peer(ROOM_ID);
+
+      peer.on("open", (id) => {
+        setStatus("wait", `Sala "${id}" lista`);
+        clearInterval(retryTimer);
+      });
+
+      peer.on("connection", (conn) => {
+        activeConn = conn;
+        setStatus("ok", "Conectado a Comida");
+
+        conn.on("data", (data) => {
+          if (data && data.type === "send_food") {
+            const yPos = Math.max(20, Math.min(H - 20, data.ny * H));
+            foods.push({
+              x: 16,
+              y: yPos,
+              vx: Math.max(1.8, Math.abs(data.vx || 3.2)),
+              vy: data.vy || (Math.random() - 0.5) * 2.5,
+              r: 8,
+              color: data.color || "#fbbf24",
+              grace: 25 // frames de gracia para que no salga por la izquierda al instante de entrar
+            });
+            ripples.push({ x: 8, y: yPos, r: 6, alpha: 0.9 });
+          }
+        });
+
+        conn.on("close", () => {
+          setStatus("wait", "Esperando comida...");
+          activeConn = null;
+        });
+      });
+
+      peer.on("error", (err) => {
+        // Si el ID está temporalmente ocupado tras una recarga rápida, reintenta cada 2s
+        setStatus("wait", "Reintentando sala...");
+        scheduleRetry();
+      });
+
+      peer.on("disconnected", () => {
+        setStatus("wait", "Reconectando...");
+        scheduleRetry();
+      });
+    }
+
+    function scheduleRetry() {
+      clearInterval(retryTimer);
+      retryTimer = setInterval(() => {
+        if (!peer || peer.destroyed || peer.disconnected) {
+          startHost();
+        }
+      }, 2000);
+    }
+
+    startHost();
+
+    // --- Lógica de Simulación ---
+    function update() {
+      if (agitation > 0) {
+        agitation = Math.max(0, agitation - 0.008);
+        agitationInfoEl.textContent = agitation > 0.2 ? "¡Agitada!" : "Calma";
+      }
+      if (lurePoint) {
+        lurePoint.life -= 0.015;
+        if (lurePoint.life <= 0) lurePoint = null;
+      }
+
+      // Actualizar comida
+      for (let i = foods.length - 1; i >= 0; i--) {
+        const f = foods[i];
+        f.x += f.vx;
+        f.y += f.vy;
+        if (f.grace > 0) f.grace--;
+
+        // Rebote arriba, abajo y derecha
+        if (f.y - f.r < 0) { f.y = f.r; f.vy = Math.abs(f.vy); }
+        if (f.y + f.r > H) { f.y = H - f.r; f.vy = -Math.abs(f.vy); }
+        if (f.x + f.r > W) { f.x = W - f.r; f.vx = -Math.abs(f.vx); }
+
+        // Si sale por el borde izquierdo sin ser comida, regresa a pez1.html
+        if (f.x - f.r <= 0 && f.grace <= 0) {
+          if (activeConn && activeConn.open) {
+            activeConn.send({
+              type: "return_food",
+              ny: f.y / H,
+              vx: Math.abs(f.vx),
+              vy: f.vy,
+              color: f.color
+            });
+            ripples.push({ x: 6, y: f.y, r: 5, alpha: 0.85 });
+            foods.splice(i, 1);
+          } else {
+            f.x = f.r;
+            f.vx = Math.abs(f.vx);
+          }
+        }
+      }
+
+      // Actualizar peces
+      const speedBoost = 1 + agitation * 1.45;
+      fishes.forEach(fish => {
+        let target = null;
+        let minDist = Infinity;
+
+        // Buscar comida más cercana
+        foods.forEach(food => {
+          const d = Math.hypot(food.x - fish.x, food.y - fish.y);
+          if (d < minDist) {
+            minDist = d;
+            target = food;
+          }
+        });
+
+        if (target) {
+          // Perseguir comida
+          const desiredAngle = Math.atan2(target.y - fish.y, target.x - fish.x);
+          const chaseSpeed = 3.8 * speedBoost;
+          fish.vx += (Math.cos(desiredAngle) * chaseSpeed - fish.vx) * 0.08;
+          fish.vy += (Math.sin(desiredAngle) * chaseSpeed - fish.vy) * 0.08;
+        } else if (lurePoint) {
+          // Acercarse al toque en el agua
+          const desiredAngle = Math.atan2(lurePoint.y - fish.y, lurePoint.x - fish.x);
+          const lureSpeed = 3.2 * speedBoost;
+          fish.vx += (Math.cos(desiredAngle) * lureSpeed - fish.vx) * 0.06;
+          fish.vy += (Math.sin(desiredAngle) * lureSpeed - fish.vy) * 0.06;
+        } else {
+          // Nado libre suave con ligera variación orgánica
+          fish.vx += (Math.random() - 0.5) * 0.14 * speedBoost;
+          fish.vy += (Math.random() - 0.5) * 0.14 * speedBoost;
+          const sp = Math.hypot(fish.vx, fish.vy);
+          const cruise = 2.1 * speedBoost;
+          if (sp > 0.01) {
+            fish.vx = (fish.vx / sp) * (sp * 0.96 + cruise * 0.04);
+            fish.vy = (fish.vy / sp) * (sp * 0.96 + cruise * 0.04);
+          }
+        }
+
+        fish.x += fish.vx;
+        fish.y += fish.vy;
+
+        // Velocidad de aleteo proporcional a velocidad de nado
+        const currentSpd = Math.hypot(fish.vx, fish.vy);
+        fish.phase += 0.14 + currentSpd * 0.06;
+
+        // Rebote en los 4 bordes
+        const margin = fish.size;
+        if (fish.x < margin) { fish.x = margin; fish.vx = Math.abs(fish.vx); }
+        if (fish.x > W - margin) { fish.x = W - margin; fish.vx = -Math.abs(fish.vx); }
+        if (fish.y < margin) { fish.y = margin; fish.vy = Math.abs(fish.vy); }
+        if (fish.y > H - margin) { fish.y = H - margin; fish.vy = -Math.abs(fish.vy); }
+
+        // Comprobar si come alguna bolita
+        for (let i = foods.length - 1; i >= 0; i--) {
+          const food = foods[i];
+          if (Math.hypot(fish.x - food.x, fish.y - food.y) < fish.size * 0.9 + food.r) {
+            foods.splice(i, 1);
+            eatenCount++;
+            eatenCountEl.textContent = eatenCount;
+            fish.size = Math.min(fish.maxSize, fish.size + 1.4);
+            ripples.push({ x: food.x, y: food.y, r: 4, alpha: 0.9 });
+          }
+        }
+      });
+
+      // Burbujas y ondas
+      bubbles.forEach(b => {
+        b.y += b.vy * (1 + agitation * 2);
+        b.x += Math.sin(b.y * 0.03) * 0.4;
+        if (b.y < -10) { b.y = H + 10; b.x = Math.random() * W; }
+      });
+
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        ripples[i].r += 3;
+        ripples[i].alpha -= 0.03;
+        if (ripples[i].alpha <= 0) ripples.splice(i, 1);
+      }
+    }
+
+    function drawFish(f) {
+      const angle = Math.atan2(f.vy, f.vx);
+      const tailSwing = Math.sin(f.phase) * (f.size * 0.42);
+
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.rotate(angle);
+
+      // Cola ondulante
+      ctx.fillStyle = f.palette.fin;
+      ctx.beginPath();
+      ctx.moveTo(-f.size * 0.75, 0);
+      ctx.quadraticCurveTo(-f.size * 1.25, tailSwing * 0.6, -f.size * 1.55, -f.size * 0.48 + tailSwing);
+      ctx.lineTo(-f.size * 1.35, tailSwing * 0.5);
+      ctx.lineTo(-f.size * 1.55, f.size * 0.48 + tailSwing);
+      ctx.closePath();
+      ctx.fill();
+
+      // Aletas laterales
+      ctx.fillStyle = f.palette.fin;
+      ctx.beginPath();
+      ctx.ellipse(-f.size * 0.1, f.size * 0.45, f.size * 0.28, f.size * 0.14, 0.5, 0, Math.PI * 2);
+      ctx.ellipse(-f.size * 0.1, -f.size * 0.45, f.size * 0.28, f.size * 0.14, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Cuerpo hidrodinámico
+      ctx.fillStyle = f.palette.body;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, f.size, f.size * 0.52, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ojo
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(f.size * 0.52, -f.size * 0.16, f.size * 0.15, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.arc(f.size * 0.56, -f.size * 0.16, f.size * 0.08, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // Portal izquierdo si está conectado
+      if (activeConn && activeConn.open) {
+        const pGrad = ctx.createLinearGradient(0, 0, 14, 0);
+        pGrad.addColorStop(0, "rgba(45, 212, 191, 0.45)");
+        pGrad.addColorStop(1, "rgba(45, 212, 191, 0)");
+        ctx.fillStyle = pGrad;
+        ctx.fillRect(0, 0, 14, H);
+      }
+
+      // Burbujas
+      ctx.fillStyle = "rgba(186, 230, 253, 0.22)";
+      bubbles.forEach(b => {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Ondas
+      ripples.forEach(rp => {
+        ctx.strokeStyle = `rgba(94, 234, 212, ${rp.alpha})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+      // Comida flotante
+      foods.forEach(food => {
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = food.color;
+        ctx.fillStyle = food.color;
+        ctx.beginPath();
+        ctx.arc(food.x, food.y, food.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      });
+
+      // Cardumen
+      fishes.forEach(drawFish);
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+    loop();
+  </script>
+</body>
+</html>
