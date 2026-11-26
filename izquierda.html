@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Pez 1 - Comida (Izquierda)</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: radial-gradient(circle at 20% 50%, #102a43 0%, #071526 100%);
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #e2e8f0;
+      touch-action: none;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #hud {
+      position: fixed; top: 10px; left: 10px; right: 10px;
+      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+      gap: 8px; pointer-events: none; z-index: 10;
+    }
+    .badge {
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      backdrop-filter: blur(6px);
+      padding: 6px 12px; border-radius: 999px;
+      font-size: 13px; font-weight: 600;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #ef4444; }
+    .dot.ok { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .dot.wait { background: #f59e0b; }
+    #btnMotion {
+      pointer-events: auto;
+      background: #0284c7; color: #fff; border: none;
+      padding: 6px 12px; border-radius: 999px;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    #portal-hint {
+      position: fixed; right: 6px; top: 50%; transform: translateY(-50%);
+      writing-mode: vertical-rl; text-orientation: mixed;
+      font-size: 11px; letter-spacing: 2px; color: rgba(56, 189, 248, 0.45);
+      pointer-events: none; font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="badge">
+      <span id="statusDot" class="dot wait"></span>
+      <span id="statusText">Buscando peces...</span>
+    </div>
+    <div class="badge">
+      <span>Enviadas: <strong id="sentCount">0</strong></span>
+      <span>|</span>
+      <span>Vel: <strong id="velInfo">0</strong></span>
+      <span id="cornerTag" style="color:#38bdf8; display:none;">⚡ESQUINA</span>
+    </div>
+    <button id="btnMotion">Activar Sensor</button>
+  </div>
+  <div id="portal-hint">PUENTE A PECES ➔</div>
+  <canvas id="gameCanvas"></canvas>
+
+  <script>
+    const ROOM_ID = "circulo-sala-1";
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const sentCountEl = document.getElementById("sentCount");
+    const velInfoEl = document.getElementById("velInfo");
+    const cornerTagEl = document.getElementById("cornerTag");
+    const btnMotion = document.getElementById("btnMotion");
+
+    let W = 0, H = 0;
+    function resize() {
+      W = canvas.width = window.innerWidth;
+      H = canvas.height = window.innerHeight;
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    // --- Configuración física ---
+    const CORNER_RADIUS = 135;
+    const MIN_SPEED = 1.4;
+    const MAX_SPEED = 16.5;
+    const COLORS = ["#fbbf24", "#fb7185", "#34d399", "#f97316", "#a78bfa", "#38bdf8"];
+
+    let sentCount = 0;
+    let crumbs = [];
+    let ripples = [];
+    let shakeIntensity = 0;
+
+    function clampSpeed(c) {
+      const sp = Math.hypot(c.vx, c.vy);
+      if (sp < MIN_SPEED) {
+        const ang = sp > 0.001 ? Math.atan2(c.vy, c.vx) : Math.random() * Math.PI * 2;
+        c.vx = Math.cos(ang) * MIN_SPEED;
+        c.vy = Math.sin(ang) * MIN_SPEED;
+      } else if (sp > MAX_SPEED) {
+        c.vx = (c.vx / sp) * MAX_SPEED;
+        c.vy = (c.vy / sp) * MAX_SPEED;
+      }
+    }
+
+    function spawnCrumb(x, y, vx, vy, color) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 2.5 + Math.random() * 2.5;
+      const c = {
+        x: x ?? W * (0.25 + Math.random() * 0.4),
+        y: y ?? H * (0.2 + Math.random() * 0.6),
+        vx: vx ?? Math.cos(ang) * spd,
+        vy: vy ?? Math.sin(ang) * spd,
+        r: 7 + Math.random() * 3,
+        color: color ?? COLORS[Math.floor(Math.random() * COLORS.length)],
+        flash: 0
+      };
+      clampSpeed(c);
+      crumbs.push(c);
+    }
+
+    // Semilla inicial de migas
+    for (let i = 0; i < 8; i++) spawnCrumb();
+
+    function getCorners() {
+      return [
+        { x: 0, y: 0 },
+        { x: W, y: 0 },
+        { x: 0, y: H },
+        { x: W, y: H }
+      ];
+    }
+
+    function isNearCorner(x, y) {
+      return getCorners().some(corner => Math.hypot(x - corner.x, y - corner.y) <= CORNER_RADIUS);
+    }
+
+    function impulseAll(power, originX = null, originY = null) {
+      let cornerTriggered = false;
+      crumbs.forEach(c => {
+        const nearCorner = isNearCorner(c.x, c.y);
+        let boost = power;
+
+        if (originX !== null && originY !== null) {
+          const dist = Math.hypot(c.x - originX, c.y - originY);
+          if (dist < 220) {
+            const ang = Math.atan2(c.y - originY, c.x - originX);
+            boost = nearCorner ? power * 2.1 : power * 1.35;
+            c.vx += Math.cos(ang) * boost;
+            c.vy += Math.sin(ang) * boost;
+            if (nearCorner) {
+              c.flash = 1.0;
+              cornerTriggered = true;
+            }
+          }
+        } else {
+          // Agitación general por movimiento del celular
+          const ang = Math.atan2(c.vy, c.vx) + (Math.random() - 0.5) * 0.9;
+          boost = nearCorner ? power * 2.2 : power;
+          c.vx += Math.cos(ang) * boost;
+          c.vy += Math.sin(ang) * boost;
+          if (nearCorner) {
+            c.flash = 1.0;
+            cornerTriggered = true;
+          }
+        }
+        clampSpeed(c);
+      });
+
+      if (cornerTriggered) {
+        cornerTagEl.style.display = "inline";
+        clearTimeout(cornerTagEl._t);
+        cornerTagEl._t = setTimeout(() => { cornerTagEl.style.display = "none"; }, 650);
+      }
+    }
+
+    // --- Interacción Táctil ---
+    canvas.addEventListener("pointerdown", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const tx = e.clientX - rect.left;
+      const ty = e.clientY - rect.top;
+
+      ripples.push({ x: tx, y: ty, r: 8, alpha: 0.9 });
+
+      // Si toca cerca de una miga, la impulsa; si toca en zona vacía, suelta una nueva miga
+      let hitExisting = false;
+      crumbs.forEach(c => {
+        if (Math.hypot(c.x - tx, c.y - ty) < 110) hitExisting = true;
+      });
+
+      if (hitExisting) {
+        impulseAll(5.2, tx, ty);
+      } else {
+        const ang = (Math.random() - 0.5) * 1.1; // tiende hacia la derecha
+        const spd = 4 + Math.random() * 3;
+        spawnCrumb(tx, ty, Math.cos(ang) * spd, Math.sin(ang) * spd);
+        if (crumbs.length > 22) crumbs.shift();
+      }
+    });
+
+    // --- Sensor de Movimiento (DeviceMotion) ---
+    let lastMotionTime = 0;
+    function handleMotion(e) {
+      const acc = e.acceleration || e.accelerationIncludingGravity;
+      if (!acc) return;
+      const mag = Math.hypot(acc.x || 0, acc.y || 0, acc.z || 0);
+      // Umbral ajustado para detectar sacudida o giro brusco
+      const threshold = e.acceleration ? 8.5 : 17.5;
+      if (mag > threshold) {
+        const now = Date.now();
+        if (now - lastMotionTime > 220) {
+          lastMotionTime = now;
+          shakeIntensity = Math.min(1, mag / 25);
+          impulseAll(4.5);
+        }
+      }
+    }
+
+    btnMotion.addEventListener("click", async () => {
+      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+        try {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res === "granted") {
+            window.addEventListener("devicemotion", handleMotion);
+            btnMotion.textContent = "Sensor Activo ✓";
+            btnMotion.style.background = "#16a34a";
+          }
+        } catch (err) {
+          btnMotion.textContent = "Sin permiso";
+        }
+      } else {
+        window.addEventListener("devicemotion", handleMotion);
+        btnMotion.textContent = "Sensor Activo ✓";
+        btnMotion.style.background = "#16a34a";
+      }
+    });
+    // Activar automáticamente en Android/navegadores que no requieren gesto explícito
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission !== "function") {
+      window.addEventListener("devicemotion", handleMotion);
+      btnMotion.textContent = "Sensor Listo ✓";
+      btnMotion.style.background = "#15803d";
+    }
+
+    // --- Conexión PeerJS (Cliente hacia ROOM_ID) ---
+    let peer = null;
+    let conn = null;
+    let reconnectTimer = null;
+
+    function setStatus(state, text) {
+      statusDot.className = "dot " + state;
+      statusText.textContent = text;
+    }
+
+    function initPeer() {
+      peer = new Peer();
+      peer.on("open", () => {
+        connectToFish();
+      });
+      peer.on("error", () => {
+        setStatus("wait", "Reintentando sala...");
+      });
+    }
+
+    function connectToFish() {
+      if (!peer || peer.disconnected) return;
+      if (conn && conn.open) return;
+
+      setStatus("wait", "Conectando a peces...");
+      conn = peer.connect(ROOM_ID, { reliable: true });
+
+      conn.on("open", () => {
+        setStatus("ok", "Conectado a Peces");
+        clearInterval(reconnectTimer);
+      });
+
+      conn.on("data", (data) => {
+        if (data && data.type === "return_food") {
+          // Reaparece en el borde derecho entrando hacia la izquierda
+          const yPos = Math.max(20, Math.min(H - 20, data.ny * H));
+          const vx = -Math.abs(data.vx || 3.5);
+          const vy = data.vy || (Math.random() - 0.5) * 3;
+          spawnCrumb(W - 18, yPos, vx, vy, data.color);
+          ripples.push({ x: W - 10, y: yPos, r: 6, alpha: 0.8 });
+        }
+      });
+
+      conn.on("close", () => {
+        setStatus("", "Desconectado");
+        startReconnectLoop();
+      });
+
+      conn.on("error", () => {
+        startReconnectLoop();
+      });
+    }
+
+    function startReconnectLoop() {
+      clearInterval(reconnectTimer);
+      reconnectTimer = setInterval(() => {
+        if (!conn || !conn.open) {
+          connectToFish();
+        }
+      }, 2000);
+    }
+
+    initPeer();
+    startReconnectLoop();
+
+    // --- Bucle Principal ---
+    function update() {
+      let maxSpd = 0;
+
+      for (let i = crumbs.length - 1; i >= 0; i--) {
+        const c = crumbs[i];
+        c.x += c.vx;
+        c.y += c.vy;
+
+        // Fricción suave hacia velocidad crucero
+        const spd = Math.hypot(c.vx, c.vy);
+        if (spd > 4.2) {
+          c.vx *= 0.988;
+          c.vy *= 0.988;
+        }
+        clampSpeed(c);
+        if (spd > maxSpd) maxSpd = spd;
+
+        if (c.flash > 0) c.flash = Math.max(0, c.flash - 0.04);
+
+        // Rebote arriba, abajo e izquierda
+        if (c.y - c.r < 0) { c.y = c.r; c.vy = Math.abs(c.vy); }
+        if (c.y + c.r > H) { c.y = H - c.r; c.vy = -Math.abs(c.vy); }
+        if (c.x - c.r < 0) { c.x = c.r; c.vx = Math.abs(c.vx); }
+
+        // Cruce por el borde derecho
+        if (c.x + c.r >= W) {
+          if (conn && conn.open) {
+            conn.send({
+              type: "send_food",
+              ny: c.y / H,
+              vx: Math.abs(c.vx),
+              vy: c.vy,
+              color: c.color
+            });
+            sentCount++;
+            sentCountEl.textContent = sentCount;
+            ripples.push({ x: W - 4, y: c.y, r: 5, alpha: 1 });
+            crumbs.splice(i, 1);
+
+            // Mantener al menos 4 migas en pantalla para fluidez
+            if (crumbs.length < 4) spawnCrumb(W * 0.2, Math.random() * H);
+          } else {
+            // Si no hay conexión P2P, rebota en el borde derecho
+            c.x = W - c.r;
+            c.vx = -Math.abs(c.vx);
+          }
+        }
+      }
+
+      velInfoEl.textContent = maxSpd.toFixed(1);
+
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        ripples[i].r += 3.2;
+        ripples[i].alpha -= 0.03;
+        if (ripples[i].alpha <= 0) ripples.splice(i, 1);
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      // Dibujar zonas de esquina sutiles (radio 135px)
+      getCorners().forEach(corner => {
+        const grad = ctx.createRadialGradient(corner.x, corner.y, 10, corner.x, corner.y, CORNER_RADIUS);
+        grad.addColorStop(0, "rgba(56, 189, 248, 0.14)");
+        grad.addColorStop(1, "rgba(56, 189, 248, 0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(corner.x, corner.y, CORNER_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Línea luminosa en el portal derecho si está conectado
+      if (conn && conn.open) {
+        const pGrad = ctx.createLinearGradient(W - 14, 0, W, 0);
+        pGrad.addColorStop(0, "rgba(56, 189, 248, 0)");
+        pGrad.addColorStop(1, "rgba(56, 189, 248, 0.45)");
+        ctx.fillStyle = pGrad;
+        ctx.fillRect(W - 14, 0, 14, H);
+      }
+
+      // Ondas táctiles / portal
+      ripples.forEach(rp => {
+        ctx.strokeStyle = `rgba(125, 211, 252, ${rp.alpha})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+      // Migas de comida
+      crumbs.forEach(c => {
+        const near = isNearCorner(c.x, c.y);
+
+        // Destello visual al acelerar en esquina
+        if (c.flash > 0) {
+          ctx.fillStyle = `rgba(255, 255, 255, ${c.flash * 0.65})`;
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.r + c.flash * 18, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.shadowBlur = near ? 14 : 6;
+        ctx.shadowColor = c.flash > 0 ? "#ffffff" : c.color;
+        ctx.fillStyle = c.flash > 0.3 ? "#ffffff" : c.color;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Aro indicador si está dentro del radio de esquina
+        if (near) {
+          ctx.strokeStyle = "rgba(255,255,255,0.55)";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.r + 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      });
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+    loop();
+  </script>
+</body>
+</html>
